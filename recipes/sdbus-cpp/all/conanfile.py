@@ -4,7 +4,7 @@ from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.build import check_min_cppstd
 from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
-from conan.tools.files import export_conandata_patches, apply_conandata_patches, copy, get, rmdir
+from conan.tools.files import export_conandata_patches, apply_conandata_patches, copy, get, rmdir, replace_in_file
 from conan.tools.scm import Version
 
 required_conan_version = ">=1.51.0"
@@ -30,7 +30,7 @@ class SdbusCppConan(ConanFile):
         "fPIC": True,
         "with_code_gen": False,
     }
-    generators = "PkgConfigDeps", "VirtualBuildEnv"
+    generators = "PkgConfigDeps", "VirtualBuildEnv", "CMakeDeps"
 
     @property
     def _minimum_cpp_standard(self):
@@ -57,6 +57,8 @@ class SdbusCppConan(ConanFile):
 
     def requirements(self):
         self.requires("libsystemd/255.2")
+        if self.options.with_code_gen:
+            self.requires("expat/[>=2.6.2 <3]", visible=False)
 
     def validate(self):
         if self.info.settings.os != "Linux":
@@ -75,8 +77,6 @@ class SdbusCppConan(ConanFile):
 
     def build_requirements(self):
         self.tool_requires("pkgconf/2.1.0")
-        if self.options.with_code_gen:
-            self.tool_requires("expat/[>=2.6.2 <3]")
 
     def layout(self):
         cmake_layout(self, src_folder="src")
@@ -86,19 +86,31 @@ class SdbusCppConan(ConanFile):
 
     def generate(self):
         tc = CMakeToolchain(self)
-        tc.variables["BUILD_CODE_GEN"] = self.options.with_code_gen
-        tc.variables["BUILD_DOC"] = False
-        tc.variables["BUILD_TESTS"] = False
-        tc.variables["BUILD_LIBSYSTEMD"] = False
+        tc.variables["SDBUSCPP_BUILD_CODEGEN"] = self.options.with_code_gen
+        tc.variables["SDBUSCPP_BUILD_DOCS"] = False
+        tc.variables["SDBUSCPP_BUILD_TESTS"] = False
+        tc.variables["SDBUSCPP_BUILD_LIBSYSTEMD"] = False
         tc.variables["SDBUSCPP_BUILD_DOCS"] = False
         tc.generate()
 
         # workaround for https://gitlab.kitware.com/cmake/cmake/-/issues/18150
         copy(self, "*.pc", self.generators_folder,
              os.path.join(self.generators_folder, "lib", "pkgconfig"))
+        
+    def _patch_sources(self):
+        apply_conandata_patches(self)
+
+        tools_cmakelists = os.path.join(self.source_folder, "tools", "CMakeLists.txt")
+
+        replace_in_file(self,
+            tools_cmakelists,
+            "target_link_libraries (sdbus-c++-xml2cpp ${EXPAT_LIBRARIES})\n"
+            "target_include_directories(sdbus-c++-xml2cpp PRIVATE ${EXPAT_INCLUDE_DIRS})",
+            "target_link_libraries(sdbus-c++-xml2cpp PRIVATE expat::expat)"
+        )
 
     def build(self):
-        apply_conandata_patches(self)
+        self._patch_sources()
         cmake = CMake(self)
         cmake.configure()
         cmake.build()
